@@ -1,18 +1,18 @@
 identity:
-  name: "skill"
+  name: "skill_agent"
   author: "lfenghx"
   label:
-    en_US: "skill"
-    zh_Hans: "skill"
-    pt_BR: "skill"
-    ja_JP: "skill"
+    en_US: "Skill_Agent"
+    zh_Hans: "Skill_Agent"
+    pt_BR: "Skill_Agent"
+    ja_JP: "Skill_Agent"
 description:
   human:
-    en_US: "可基于Skill渐进式披露模式执行任务的Agent插件"
+    en_US: "Skill_Agent is an Agent plugin that can execute tasks based on the Skill progressive disclosure mode."
     zh_Hans: "可基于Skill渐进式披露模式执行任务的Agent插件"
-    pt_BR: "可基于Skill渐进式披露模式执行任务的Agent插件"
-    ja_JP: "可基于Skill渐进式披露模式执行任务的Agent插件"
-  llm: "可基于Skill渐进式披露模式执行任务的Agent插件"
+    pt_BR: "Skill_Agent é um plugin de Agent que pode executar tarefas com base no modo de divulgação progressiva de Skill."
+    ja_JP: "Skill_Agent は、Skill 進化的披露モードに基づいてタスクを実行できる Agent プラグインです。"
+  llm: "Skill_Agent is an Agent plugin that can execute tasks based on the Skill progressive disclosure mode"
 parameters:
   - name: query
     type: string
@@ -23,11 +23,11 @@ parameters:
       pt_BR: Query string
       ja_JP: クエリ文字列
     human_description:
-      en_US: "可基于Skill渐进式披露模式执行任务的Agent插件"
-      zh_Hans: "可基于Skill渐进式披露模式执行任务的Agent插件"
-      pt_BR: "可基于Skill渐进式披露模式执行任务的Agent插件"
-      ja_JP: "可基于Skill渐进式披露模式执行任务的Agent插件"
-    llm_description: "可基于Skill渐进式披露模式执行任务的Agent插件"
+      en_US: "please input your question"
+      zh_Hans: "请输入你想问的问题"
+      pt_BR: "please input your question"
+      ja_JP: "クエリ文字列は、Skill_Agent に対して実行するタスクを指定する必要があります。"
+    llm_description: "please input your question"
     form: llm
 
   - name: model
@@ -80,22 +80,6 @@ parameters:
       ja_JP: 実行中に保持する直近ターン数
     llm_description: How many recent turns to keep during the run.
     form: form
-
-  - name: system_prompt
-    type: string
-    required: false
-    label:
-      en_US: System prompt
-      zh_Hans: 系统提示词
-      pt_BR: System prompt
-      ja_JP: システムプロンプト
-    human_description:
-      en_US: Override the default system prompt.
-      zh_Hans: 覆盖默认系统提示词（可不填）
-      pt_BR: Override the default system prompt.
-      ja_JP: デフォルトのシステムプロンプトを上書きします
-    llm_description: Override the default system prompt.
-    form: form
 extra:
   python:
-    source: tools/skill.py
+    source: tools/skill_agent.py

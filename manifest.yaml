@@ -1,7 +1,7 @@
 version: 0.0.1
 type: plugin
 author: lfenghx
-name: skill
+name: skill_agent
 label:
   en_US: Skill_Agent
   ja_JP: Skill_Agent
@@ -36,7 +36,7 @@ resource:
       size: 104857600
 plugins:
   tools:
-    - provider/skill.yaml
+    - provider/skill_agent.yaml
 meta:
   version: 0.0.1
   arch:

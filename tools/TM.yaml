@@ -10,9 +10,9 @@ description:
   human:
     en_US: "Manage local skill packages (add/delete/list/download)."
     zh_Hans: "管理本地 skills 技能包：新增/删除/查看/下载"
-    pt_BR: "Manage local skill packages (add/delete/list/download)."
-    ja_JP: "Manage local skill packages (add/delete/list/download)."
-  llm: "管理本地 skills 技能包：新增/删除/查看/下载"
+    pt_BR: "Gerenciar pacotes de habilidades locais (adicionar/remover/visualizar/baixar)."
+    ja_JP: "ローカルのスキルパッケージを管理（追加/削除/表示/ダウンロード）"
+  llm: "Manage local skill packages (add/delete/list/download)"
 parameters:
   - name: command
     type: string
@@ -23,11 +23,11 @@ parameters:
       pt_BR: Command
       ja_JP: コマンド
     human_description:
-      en_US: "Supported: 查看技能、新增技能、删除技能N、下载技能N"
+      en_US: "supported commands: add, delete, list, download"
       zh_Hans: "支持：查看技能、新增技能、删除技能N、下载技能N"
-      pt_BR: "Supported: 查看技能、新增技能、删除技能N、下载技能N"
-      ja_JP: "Supported: 查看技能、新增技能、删除技能N、下载技能N"
-    llm_description: "支持：查看技能、新增技能、删除技能N、下载技能N"
+      pt_BR: "Gerenciar pacotes de habilidades locais (adicionar/remover/visualizar/baixar)."
+      ja_JP: "ローカルのスキルパッケージを管理（追加/削除/表示/ダウンロード）"
+    llm_description: "supported commands: add, delete, list, download"
     form: llm
   - name: files
     type: files
@@ -38,11 +38,11 @@ parameters:
       pt_BR: Zip files
       ja_JP: Zipファイル
     human_description:
-      en_US: "Zip package(s) for 新增技能."
-      zh_Hans: "新增技能时上传 zip 压缩包（可多选）"
-      pt_BR: "Zip package(s) for 新增技能."
-      ja_JP: "新增技能 用の zip（複数可）"
-    llm_description: "新增技能时上传 zip 压缩包（可多选）"
+      en_US: "Zip package(s) for add command."
+      zh_Hans: "新增技能时上传 zip 压缩包"
+      pt_BR: "Zip package(s) for add command."
+      ja_JP: "新增技能 用の zip"
+    llm_description: "Zip package(s) for add command"
     form: form
 extra:
   python:
