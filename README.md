@@ -1,73 +1,60 @@
 ## Skill Agent
 
 **Author:** lfenghx  
-**Version:** 0.0.1  
-**Type:** Tool
+**Version:** 0.0.2  
+**Type:** Tool (Plugin)
 
-### Overview
+### Introduction
 
-Skill Agent is a general-purpose tool plugin built around “Skill progressive disclosure”. It treats the local `skills/` directory as a toolbox: the LLM first decides which skill may help (using metadata), then reads `SKILL.md` on-demand, and only reads files / runs scripts when necessary. Generated artifacts are returned as tool file outputs.
+Skill Agent is a general-purpose tool plugin based on “Skill Progressive Disclosure”. It treats the local `skills/` directory as a toolbox, so the model can read the skill manual on demand, then read files / run scripts only when necessary, and finally deliver text or files.
 
-### Key Features
+### Use Cases
 
-- Progressive disclosure workflow (metadata → `SKILL.md` → files/scripts)
-- File delivery: returns files generated in the temp session directory
-- Controlled execution: only whitelisted commands are allowed
-- Local debugging via `python -m main` + Dify remote install
+- You want to integrate Skills and constrain/strengthen the model using “manual (SKILL.md) + file structure + scripts”
+- You want progress messages and to return generated files as tool outputs
+- You want to package capabilities as reusable skill folders (Reference, Scripts, etc.) instead of hard-coding everything in prompts
 
-### Quickstart
+### Features
 
-1. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-2. Configure `.env`
-
-Copy `.env.example` to `.env` and set:
-
-```env
-INSTALL_METHOD=remote
-REMOTE_INSTALL_URL=debug.dify.ai:5003
-REMOTE_INSTALL_KEY=your-debug-key
-```
-
-3. Run
-
-```bash
-python -m main
-```
+- Progressive disclosure: skill index → read `SKILL.md` → read files / run commands as needed
+- File delivery: all files in the temp session directory are returned when the agent finishes
+- Free execution: the agent can execute commands such as reading/writing files and running scripts
+- Controllable memory: configurable memory turns and max step depth
 
 ### Tool Parameters
 
-See [tools/skill_agent.yaml](tools/skill_agent.yaml).
+This plugin provides two tools:
 
-- `query` (required): user task description
-- `model` (required): model selector used to drive the agent
-- `max_steps` (optional, default 8): max reasoning/tool steps per invocation
-- `memory_turns` (optional): how many recent turns to keep in-context
+- “Skill Manager”: manages the local skills directory (list/add/delete skills)
+  ![alt text](_assets/image-0.png)
+- “agent_skill”: a general agent that can execute skills that have been stored
+  ![alt text](_assets/image-1.png)
 
-### Skill Folder Convention
+### How to Use (in Dify)
 
-By default, skills are loaded from `skills/`:
+Step 1: Install this plugin directly from the Marketplace  
+Step 2: For self-hosted deployments, set `Files_url` in Dify’s `.env` to your Dify address, otherwise Dify cannot fetch uploaded files  
+Step 3: Build your workflow as shown below  
+![alt text](_assets/image-2.png)  
+Step 4: Manage skills  
+![alt text](_assets/image-3.png)  
+Step 5: Chat with Skill Agent  
+![alt text](_assets/image-4.png)
 
-```
-skills/
-  JokeMaster/
-    SKILL.md
-    Reference/
-    Scripts/
-```
+Video tutorial: https://www.bilibili.com/video/BV1iszkBCEes
 
-Notes:
+### Skill Standard
 
-- Each skill must include `SKILL.md` (YAML frontmatter supported: `name`, `description`)
-- `SKILL.md` should define trigger conditions, step-by-step workflow, required reads, commands to run, and deliverables
+- Every skill must include `SKILL.md` (YAML frontmatter supported: `name`, `description`)
+- `SKILL.md` can define trigger conditions, workflow, required reference reads, commands to run, and deliverable specs
 
-### Links & Contact
+### Changelog
 
-- Repository: <https://github.com/lfenghx/skill_agent>
-- GitHub: lfenghx
+- 0.0.2: Support agent file upload and parsing; support automatic dependency installation
+- 0.0.1: Implement skill management and a general agent that works with progressive disclosure
+
+### Author & Contact
+
+- GitHub: lfenghx (repo: <https://github.com/lfenghx/skill_agent>)
 - Bilibili: 元视界\_O凌枫o
 - Email: 550916599@qq.com
