@@ -11,6 +11,8 @@ from collections.abc import Generator
 import importlib.util
 import re
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from dify_plugin import Tool
 from dify_plugin.entities.model.message import (
@@ -42,6 +44,42 @@ def _safe_join(root: str, relative_path: str) -> str:
     if os.path.commonpath([root_abs, joined]) != root_abs:
         raise ValueError("path is outside root")
     return joined
+
+
+def _extract_url_and_name(file_item: Any) -> tuple[str | None, str | None]:
+    url = None
+    name = None
+    if hasattr(file_item, "url"):
+        url = getattr(file_item, "url", None)
+    if hasattr(file_item, "filename"):
+        name = getattr(file_item, "filename", None)
+    if hasattr(file_item, "name") and not name:
+        name = getattr(file_item, "name", None)
+    if isinstance(file_item, dict):
+        url = file_item.get("url", url)
+        name = file_item.get("filename", name) or file_item.get("name", name)
+    return url, name
+
+
+def _infer_ext_from_url(url: str) -> str:
+    path = urlparse(url or "").path
+    _, ext = os.path.splitext(path)
+    return ext if ext else ""
+
+
+def _safe_filename(preferred_name: str | None, fallback_ext: str = "") -> str:
+    if preferred_name:
+        base = os.path.basename(str(preferred_name))
+        base = re.sub(r"[<>:\"/\\\\|?*]+", "_", base).strip()
+        if base:
+            return base
+    return f"{uuid.uuid4().hex}{fallback_ext}"
+
+
+def _download_file_content(url: str, timeout: int = 30) -> bytes:
+    req = Request(url, headers={"User-Agent": "dify-plugin-skill/1.0"})
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read()
 
 
 def _read_text(path: str, max_chars: int = 12000) -> str:
@@ -152,7 +190,7 @@ def _detect_skills_root(explicit_path: str | None) -> str | None:
     return None
 
 
-ALLOWED_COMMANDS = {"python", "node", "pandoc", "soffice", "pdftoppm"}
+ALLOWED_COMMANDS = {"python", "pip", "node", "pandoc", "soffice", "pdftoppm"}
 TEMP_SESSION_PREFIX = "dify-skill-"
 
 
@@ -971,6 +1009,66 @@ class SkillAgentTool(Tool):
         if not is_resuming:
             _cleanup_old_temp_sessions(temp_root, keep=4, protect_dirs={session_dir})
 
+        file_items: list[Any] = []
+        files_param = tool_parameters.get("files")
+        if isinstance(files_param, list):
+            file_items = [x for x in files_param if x]
+        elif files_param:
+            file_items = [files_param]
+        elif tool_parameters.get("file"):
+            file_items = [tool_parameters.get("file")]
+
+        uploads_context = ""
+        if file_items:
+            uploads_dir = _safe_join(session_dir, "uploads")
+            os.makedirs(uploads_dir, exist_ok=True)
+            uploaded: list[dict[str, Any]] = []
+            for item in file_items:
+                url, name = _extract_url_and_name(item)
+                if not url:
+                    yield self.create_text_message("❌未能获取上传文件 URL（files[i].url）。\n")
+                    return
+                try:
+                    content = _download_file_content(str(url), timeout=45)
+                except Exception as e:
+                    yield self.create_text_message(f"❌文件下载失败：{str(e)}\n")
+                    return
+                ext = _infer_ext_from_url(str(url))
+                filename = _safe_filename(str(name) if name else None, fallback_ext=ext)
+                abs_path = os.path.join(uploads_dir, filename)
+                try:
+                    with open(abs_path, "wb") as f:
+                        f.write(content)
+                except Exception as e:
+                    yield self.create_text_message(f"❌保存上传文件失败：{str(e)}\n")
+                    return
+
+                rel_path = f"uploads/{filename}"
+                mime = None
+                if isinstance(item, dict) and item.get("mime_type"):
+                    mime = str(item.get("mime_type") or "").strip() or None
+                if not mime:
+                    try:
+                        mime = _guess_mime_type(filename)
+                    except Exception:
+                        mime = None
+                uploaded.append(
+                    {
+                        "relative_path": rel_path,
+                        "bytes": len(content),
+                        "mime_type": mime or "",
+                        "filename": filename,
+                        "source_url": str(url),
+                    }
+                )
+
+            lines = ["\n\n[上传文件清单]", "以下路径均相对于本次会话的 session_dir："]
+            for f in uploaded:
+                lines.append(
+                    f"- {f.get('relative_path')} | mime={f.get('mime_type') or ''} | bytes={f.get('bytes') or 0} | filename={f.get('filename') or ''}"
+                )
+            uploads_context = "\n".join(lines) + "\n"
+
         runtime = _AgentRuntime(
             skills_root=skills_root,
             session_dir=session_dir,
@@ -1003,6 +1101,8 @@ class SkillAgentTool(Tool):
             + "5) 执行前必须先确认技能包内确实存在可执行入口（脚本/模块等），不要猜测模块名；如果缺少可执行入口，则先交付当前可交付产物，并询问用户是否允许你在 temp 目录中自行创建脚本后再尝试生成。\n"
             + "补充规则：如果用户请求中已经明确给出具体类型/参数，则视为已确认，不要重复追问，直接进入对应分支执行。\n"
             + "补充规则：同一轮内如已获取过某技能的 skill_md，请勿重复调用 get_skill_metadata；可 read_temp_file(skill_md_path)。\n"
+            + "补充规则：当你准备调用 write_temp_file 时，必须先在自然语言里输出一行“写入意图确认”，包含：relative_path + 内容摘要（前 80 字）+ 大致长度；然后再发起工具调用。严禁发起 arguments 为空或缺少 relative_path/content 的 write_temp_file 调用。\n"
+            + (uploads_context or "")
             + "你必须把实现过程中的中间产物写入 temp 会话目录（脚本、草稿、生成物等）：\n"
             + "- 写文本：write_temp_file\n"
             + "- 运行命令生成文件：run_temp_command\n"

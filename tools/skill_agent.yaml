@@ -30,6 +30,22 @@ parameters:
     llm_description: "please input your question"
     form: llm
 
+  - name: files
+    type: files
+    required: false
+    label:
+      en_US: Files
+      zh_Hans: 上传文件
+      pt_BR: Files
+      ja_JP: ファイル
+    human_description:
+      en_US: "Upload file(s) for the agent to process."
+      zh_Hans: "上传文件，供 Agent 按技能说明书处理"
+      pt_BR: "Upload file(s) for the agent to process."
+      ja_JP: "エージェントが処理するファイルをアップロードします"
+    llm_description: "Upload file(s) for the agent to process."
+    form: llm
+
   - name: model
     type: model-selector
     scope: llm
