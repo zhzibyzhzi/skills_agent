@@ -65,8 +65,8 @@ parameters:
 
   - name: max_steps
     type: number
-    required: false
-    default: 8
+    required: true
+    default: 15
     label:
       en_US: Max steps
       zh_Hans: 执行轮数
@@ -82,11 +82,11 @@ parameters:
 
   - name: memory_turns
     type: number
-    required: false
-    default: 6
+    required: true
+    default: 12
     label:
       en_US: Memory turns
-      zh_Hans: 记忆窗口
+      zh_Hans: 单轮窗口
       pt_BR: Memory turns
       ja_JP: メモリターン
     human_description:
@@ -95,6 +95,23 @@ parameters:
       pt_BR: How many recent turns to keep during the run.
       ja_JP: 実行中に保持する直近ターン数
     llm_description: How many recent turns to keep during the run.
+    form: form
+
+  - name: history_turns
+    type: number
+    required: true
+    default: 3
+    label:
+      en_US: History turns
+      zh_Hans: 记忆窗口
+      pt_BR: History turns
+      ja_JP: 履歴ターン
+    human_description:
+      en_US: How many previous runs to inject as raw transcript.
+      zh_Hans: 跨回合注入最近多少轮原文对话（0 表示不注入）
+      pt_BR: How many previous runs to inject as raw transcript.
+      ja_JP: 以前の実行から挿入する原文のターン数
+    llm_description: Inject previous turns as raw transcript for continuity.
     form: form
 extra:
   python:

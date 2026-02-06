@@ -43,9 +43,10 @@ from dify_plugin.entities.model.message import (
 )
 from dify_plugin.entities.tool import ToolInvokeMessage
 
-SUMMARY_INPUT_MAX_CHARS = 12000
-SUMMARY_KEY_PREFIX = "skill:summary:"
 RESUME_KEY_PREFIX = "skill:resume:"
+HISTORY_KEY_PREFIX = "skill:history:"
+SESSION_DIR_KEY_PREFIX = "skill:session_dir:"
+HISTORY_TRANSCRIPT_MAX_CHARS = 6000
 
 def _detect_skills_root(explicit_path: str | None) -> str | None:
     if explicit_path and os.path.isdir(explicit_path):
@@ -65,7 +66,7 @@ def _detect_skills_root(explicit_path: str | None) -> str | None:
     return None
 
 
-ALLOWED_COMMANDS = {"python", "pip", "node", "pandoc", "soffice", "pdftoppm"}
+ALLOWED_COMMANDS = {"python", "pip", "node", "pandoc", "soffice", "pdftoppm", "npm", "npx", "bun"}
 TEMP_SESSION_PREFIX = "dify-skill-"
 
 
@@ -178,6 +179,34 @@ def _get_resume_storage_key(session: Any) -> str:
             return RESUME_KEY_PREFIX + c.strip()
     return RESUME_KEY_PREFIX + "global"
 
+def _get_history_storage_key(session: Any) -> str:
+    candidates = [
+        _safe_get(session, "conversation_id"),
+        _safe_get(session, "chat_id"),
+        _safe_get(session, "task_id"),
+        _safe_get(session, "id"),
+        _safe_get(session, "session_id"),
+        _safe_get(session, "app_run_id"),
+    ]
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return HISTORY_KEY_PREFIX + c.strip()
+    return HISTORY_KEY_PREFIX + "global"
+
+def _get_session_dir_storage_key(session: Any) -> str:
+    candidates = [
+        _safe_get(session, "conversation_id"),
+        _safe_get(session, "chat_id"),
+        _safe_get(session, "task_id"),
+        _safe_get(session, "id"),
+        _safe_get(session, "session_id"),
+        _safe_get(session, "app_run_id"),
+    ]
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return SESSION_DIR_KEY_PREFIX + c.strip()
+    return SESSION_DIR_KEY_PREFIX + "global"
+
 
 def _storage_get_json(storage: Any, key: str) -> dict[str, Any]:
     raw = _storage_get_text(storage, key).strip()
@@ -199,6 +228,31 @@ def _storage_set_json(storage: Any, key: str, value: dict[str, Any] | None) -> N
     except Exception:
         _storage_set_text(storage, key, "")
         return
+
+def _append_history_turn(
+    storage: Any,
+    *,
+    history_key: str,
+    user_text: str,
+    assistant_text: str,
+    max_turns: int = 50,
+) -> None:
+    state = _storage_get_json(storage, history_key)
+    turns = state.get("turns")
+    if not isinstance(turns, list):
+        turns = []
+    turns.append(
+        {
+            "user": str(user_text or ""),
+            "assistant": str(assistant_text or ""),
+            "created_at": int(time.time()),
+        }
+    )
+    if max_turns < 1:
+        max_turns = 1
+    if len(turns) > max_turns:
+        turns = turns[-max_turns:]
+    _storage_set_json(storage, history_key, {"turns": turns})
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -277,7 +331,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "relative_path": {"type": "string"},
+                    "relative_path": {"type": "string", "minLength": 1},
                     "content": {"type": "string"},
                 },
                 "required": ["relative_path", "content"],
@@ -292,7 +346,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "relative_path": {"type": "string"},
+                    "relative_path": {"type": "string", "minLength": 1},
                     "max_chars": {"type": "integer", "default": 12000},
                 },
                 "required": ["relative_path"],
@@ -334,8 +388,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "temp_relative_path": {"type": "string"},
-                    "workspace_relative_path": {"type": "string"},
+                    "temp_relative_path": {"type": "string", "minLength": 1},
+                    "workspace_relative_path": {"type": "string", "minLength": 1},
                     "overwrite": {"type": "boolean", "default": False},
                 },
                 "required": ["temp_relative_path", "workspace_relative_path"],
@@ -343,6 +397,235 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
 ]
+
+def _normalize_relative_file_path(relative_path: str) -> str | None:
+    rp = str(relative_path or "").strip()
+    if not rp:
+        return None
+    rp = rp.replace("\\", "/").lstrip("/")
+    if rp.endswith("/"):
+        return None
+    parts = [p for p in rp.split("/") if p]
+    if not parts:
+        return None
+    if any(p in {".", ".."} for p in parts):
+        return None
+    return "/".join(parts)
+
+def _is_abs_path(path: str) -> bool:
+    if not path:
+        return False
+    p = str(path)
+    if os.path.isabs(p):
+        return True
+    return bool(re.match(r"^[A-Za-z]:[\\/]", p))
+
+def _rewrite_out_arg_to_session_dir(command: list[str], *, session_dir: str) -> list[str]:
+    if not command:
+        return command
+    out_flag = "--out"
+    rewritten: list[str] = []
+    i = 0
+    while i < len(command):
+        arg = command[i]
+        if isinstance(arg, str) and arg == out_flag and i + 1 < len(command):
+            out_path = command[i + 1]
+            if isinstance(out_path, str) and out_path and not _is_abs_path(out_path):
+                rp = _normalize_relative_file_path(out_path)
+                if rp:
+                    out_path = _safe_join(session_dir, rp)
+            rewritten.extend([arg, out_path])
+            i += 2
+            continue
+        if isinstance(arg, str) and arg.startswith(out_flag + "="):
+            out_path = arg.split("=", 1)[-1]
+            if out_path and not _is_abs_path(out_path):
+                rp = _normalize_relative_file_path(out_path)
+                if rp:
+                    out_path = _safe_join(session_dir, rp)
+            rewritten.append(out_flag + "=" + out_path)
+            i += 1
+            continue
+        rewritten.append(arg)
+        i += 1
+    return rewritten
+
+def _rewrite_uploads_paths_to_session_dir(command: list[str], *, session_dir: str) -> list[str]:
+    if not command:
+        return command
+    rewritten: list[str] = []
+    for arg in command:
+        if not isinstance(arg, str) or not arg.strip():
+            rewritten.append(arg)
+            continue
+        if "://" in arg:
+            rewritten.append(arg)
+            continue
+        if _is_abs_path(arg):
+            rewritten.append(arg)
+            continue
+
+        def try_rewrite_path(p: str) -> str:
+            s = str(p or "").strip()
+            s_norm = s.replace("\\", "/")
+            m = re.match(r"^(?:\./|../)*uploads/(.+)$", s_norm)
+            if not m:
+                return s
+            tail = m.group(1)
+            rp = _normalize_relative_file_path("uploads/" + tail)
+            if not rp:
+                return s
+            abs_path = _safe_join(session_dir, rp)
+            if os.path.isfile(abs_path):
+                return abs_path
+            return s
+
+        if "=" in arg and arg.lstrip().startswith("-"):
+            k, v = arg.split("=", 1)
+            v2 = try_rewrite_path(v)
+            rewritten.append(k + "=" + v2)
+        else:
+            rewritten.append(try_rewrite_path(arg))
+    return rewritten
+
+def _rewrite_existing_session_files_to_abs(command: list[str], *, session_dir: str) -> list[str]:
+    if not command:
+        return command
+    rewritten: list[str] = []
+    for arg in command:
+        if not isinstance(arg, str) or not arg.strip():
+            rewritten.append(arg)
+            continue
+        if arg.lstrip().startswith("-"):
+            rewritten.append(arg)
+            continue
+        if "://" in arg:
+            rewritten.append(arg)
+            continue
+        if _is_abs_path(arg):
+            rewritten.append(arg)
+            continue
+
+        def try_rewrite_path(p: str) -> str:
+            s = str(p or "").strip()
+            rp = _normalize_relative_file_path(s)
+            if not rp:
+                return s
+            abs_path = _safe_join(session_dir, rp)
+            if os.path.isfile(abs_path):
+                return abs_path
+            return s
+
+        if "=" in arg and arg.lstrip().startswith("-"):
+            k, v = arg.split("=", 1)
+            v2 = try_rewrite_path(v)
+            rewritten.append(k + "=" + v2)
+        else:
+            rewritten.append(try_rewrite_path(arg))
+    return rewritten
+
+def _resolve_executable(exe: str) -> str | None:
+    e = str(exe or "").strip()
+    if not e:
+        return None
+    if _is_abs_path(e):
+        return e
+    found = shutil.which(e)
+    if found:
+        return found
+    if os.name == "nt":
+        for ext in (".cmd", ".exe", ".bat"):
+            found = shutil.which(e + ext)
+            if found:
+                return found
+    return None
+
+def _missing_executable_hint(exe: str) -> str:
+    base = os.path.basename(str(exe or "")).lower()
+    base = base.split(".", 1)[0]
+    if base in {"node", "npm", "npx"}:
+        return "需要在 plugin_daemon 容器中安装 Node.js 环境，并确保 node/npm/npx 在 PATH"
+    return "请确认该命令已安装并加入 PATH"
+
+def _build_uploads_context(session_dir: str, *, max_files: int = 50) -> str:
+    uploads_dir = _safe_join(session_dir, "uploads")
+    if not os.path.isdir(uploads_dir):
+        return ""
+    entries = _list_dir(uploads_dir, max_depth=2)
+    files: list[dict[str, Any]] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        if e.get("type") != "file":
+            continue
+        rel = str(e.get("relative_path") or "").replace("\\", "/").lstrip("/")
+        path = str(e.get("path") or "")
+        if not rel or not path:
+            continue
+        filename = os.path.basename(rel)
+        mime = ""
+        try:
+            mime = _guess_mime_type(filename)
+        except Exception:
+            mime = ""
+        size = 0
+        try:
+            size = os.path.getsize(path)
+        except Exception:
+            size = 0
+        files.append({"relative_path": f"uploads/{rel}", "bytes": size, "mime_type": mime, "filename": filename})
+    if not files:
+        return ""
+    files = files[: max(1, int(max_files or 50))]
+    lines = ["\n\n[上传文件清单]", "以下路径均相对于本次会话的 session_dir："]
+    for f in files:
+        lines.append(
+            f"- {f.get('relative_path')} | mime={f.get('mime_type') or ''} | bytes={f.get('bytes') or 0} | filename={f.get('filename') or ''}"
+        )
+    return "\n".join(lines) + "\n"
+
+def _validate_tool_arguments(tool_name: str, arguments: Any) -> tuple[bool, str]:
+    if not isinstance(arguments, dict):
+        return False, "arguments 必须是对象(dict)"
+
+    required: dict[str, list[str]] = {
+        "get_skill_metadata": ["skill_name"],
+        "list_skill_files": ["skill_name"],
+        "read_skill_file": ["skill_name", "relative_path"],
+        "run_skill_command": ["skill_name", "command"],
+        "get_session_context": [],
+        "write_temp_file": ["relative_path", "content"],
+        "read_temp_file": ["relative_path"],
+        "list_temp_files": [],
+        "run_temp_command": ["command"],
+        "export_temp_file": ["temp_relative_path", "workspace_relative_path"],
+    }
+
+    if tool_name not in required:
+        return True, ""
+
+    missing: list[str] = []
+    for key in required[tool_name]:
+        val = arguments.get(key)
+        if val is None:
+            missing.append(key)
+            continue
+        if isinstance(val, str) and not val.strip():
+            missing.append(key)
+            continue
+        if key == "command" and (not isinstance(val, list) or not val):
+            missing.append(key)
+            continue
+
+    if missing:
+        return False, "缺少或为空的必填参数: " + ", ".join(missing)
+    return True, ""
+
+def _tool_call_retry_prompt(tool_name: str, detail: str) -> str:
+    return (
+        f"你刚才发起的工具调用 `{tool_name}` 参数不合法：{detail}。"
+        "请严格按工具 schema 重新发起调用（arguments 必须包含必填字段且非空）。"
+    )
 
 class _AgentRuntime:
 
@@ -359,6 +642,10 @@ class _AgentRuntime:
         self.max_steps = max_steps
         self.memory_turns = memory_turns
         self._skill_metadata_cache: dict[str, dict[str, Any]] = {}
+
+    def has_skill_metadata(self, skill_name: str) -> bool:
+        cached = self._skill_metadata_cache.get(skill_name)
+        return bool(isinstance(cached, dict) and cached.get("skill") == skill_name)
 
     def load_skills_index(self) -> dict[str, Any]:
         if not self.skills_root:
@@ -384,33 +671,14 @@ class _AgentRuntime:
     def get_skill_metadata(self, skill_name: str) -> dict[str, Any]:
         if not self.skills_root:
             return {"error": "skills_root not found"}
-        cached = self._skill_metadata_cache.get(skill_name)
-        if isinstance(cached, dict) and cached.get("skill") == skill_name:
-            return {
-                "skill": skill_name,
-                "metadata": cached.get("metadata") or {},
-                "cached": True,
-                "skill_md_path": cached.get("skill_md_path") or "",
-                "note": "skill_md 已在本轮缓存到 temp，为节省 token 此处不重复输出；如需原文请 read_temp_file(skill_md_path)。",
-            }
         path = _safe_join(self.skills_root, skill_name)
         skill_md = os.path.join(path, "SKILL.md")
         if not os.path.isfile(skill_md):
             return {"error": "SKILL.md not found", "skill": skill_name}
         content = _read_text(skill_md, 12000)
         meta = _parse_frontmatter(content)
-        safe_folder = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", (skill_name or "").strip())
-        if not safe_folder:
-            safe_folder = "skill"
-        safe_folder = safe_folder[:60]
-        skill_md_path = f"_skill_cache/{safe_folder}/SKILL.md"
-        try:
-            self.write_temp_file(skill_md_path, content)
-        except Exception:
-            skill_md_path = ""
-        result = {"skill": skill_name, "metadata": meta, "skill_md": content, "skill_md_path": skill_md_path}
-        self._skill_metadata_cache[skill_name] = {"skill": skill_name, "metadata": meta, "skill_md_path": skill_md_path}
-        return result
+        self._skill_metadata_cache[skill_name] = {"skill": skill_name, "metadata": meta}
+        return {"skill": skill_name, "metadata": meta, "skill_md": content}
 
     def list_skill_files(self, skill_name: str, max_depth: int = 2) -> dict[str, Any]:
         if not self.skills_root:
@@ -429,18 +697,40 @@ class _AgentRuntime:
 
     def write_temp_file(self, relative_path: str, content: str) -> dict[str, Any]:
         os.makedirs(self.session_dir, exist_ok=True)
-        path = _safe_join(self.session_dir, relative_path)
+        rp = _normalize_relative_file_path(relative_path)
+        if not rp:
+            return {"error": "invalid relative_path", "relative_path": relative_path}
+        try:
+            path = _safe_join(self.session_dir, rp)
+        except Exception as e:
+            return {"error": "invalid relative_path", "relative_path": relative_path, "exception": str(e)}
+        if os.path.isdir(path):
+            return {"error": "path is a directory", "relative_path": relative_path, "path": path}
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content or "")
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content or "")
+        except Exception as e:
+            return {"error": "write failed", "relative_path": relative_path, "path": path, "exception": str(e)}
         return {"path": path, "bytes": len((content or "").encode("utf-8"))}
 
     def read_temp_file(self, relative_path: str, max_chars: int = 12000) -> dict[str, Any]:
         os.makedirs(self.session_dir, exist_ok=True)
-        path = _safe_join(self.session_dir, relative_path)
+        rp = _normalize_relative_file_path(relative_path)
+        if not rp:
+            return {"error": "invalid relative_path", "relative_path": relative_path}
+        try:
+            path = _safe_join(self.session_dir, rp)
+        except Exception as e:
+            return {"error": "invalid relative_path", "relative_path": relative_path, "exception": str(e)}
+        if os.path.isdir(path):
+            return {"error": "path is a directory", "relative_path": relative_path, "path": path}
         if not os.path.isfile(path):
             return {"error": "file not found", "relative_path": relative_path}
-        return {"path": path, "content": _read_text(path, max_chars)}
+        try:
+            return {"path": path, "content": _read_text(path, max_chars)}
+        except Exception as e:
+            return {"error": "read failed", "relative_path": relative_path, "path": path, "exception": str(e)}
 
     def list_temp_files(self, max_depth: int = 4) -> dict[str, Any]:
         os.makedirs(self.session_dir, exist_ok=True)
@@ -484,16 +774,29 @@ class _AgentRuntime:
             command = [sys.executable] + command[1:]
         elif exe not in ALLOWED_COMMANDS:
             return {"error": f"command not allowed: {exe}"}
+        resolved0 = _resolve_executable(str(command[0] or ""))
+        if not resolved0:
+            missing = str(command[0] or exe)
+            return {"error": "executable_not_found", "exe": missing, "hint": _missing_executable_hint(missing)}
+        command = [resolved0] + command[1:]
+        command = _rewrite_uploads_paths_to_session_dir(command, session_dir=self.session_dir)
+        command = _rewrite_existing_session_files_to_abs(command, session_dir=self.session_dir)
+        command = _rewrite_out_arg_to_session_dir(command, session_dir=self.session_dir)
         cwd = skill_path if not cwd_relative else _safe_join(skill_path, cwd_relative)
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-        )
-        return {"returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            return {"returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+        except FileNotFoundError as e:
+            return {"error": "executable_not_found", "exe": str(command[0] or exe), "exception": str(e)}
+        except Exception as e:
+            return {"error": "subprocess_failed", "exe": str(command[0] or exe), "exception": str(e)}
 
     def run_temp_command(
         self, *, command: list[str], cwd_relative: str | None = None, auto_install: bool = False
@@ -512,17 +815,29 @@ class _AgentRuntime:
             command = [sys.executable] + command[1:]
         elif exe not in ALLOWED_COMMANDS:
             return {"error": f"command not allowed: {exe}"}
+        resolved0 = _resolve_executable(str(command[0] or ""))
+        if not resolved0:
+            missing = str(command[0] or exe)
+            return {"error": "executable_not_found", "exe": missing, "hint": _missing_executable_hint(missing)}
+        command = [resolved0] + command[1:]
+        command = _rewrite_uploads_paths_to_session_dir(command, session_dir=self.session_dir)
+        command = _rewrite_existing_session_files_to_abs(command, session_dir=self.session_dir)
         os.makedirs(self.session_dir, exist_ok=True)
         cwd = self.session_dir if not cwd_relative else _safe_join(self.session_dir, cwd_relative)
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-        )
-        return {"returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            return {"returncode": result.returncode, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+        except FileNotFoundError as e:
+            return {"error": "executable_not_found", "exe": str(command[0] or exe), "exception": str(e)}
+        except Exception as e:
+            return {"error": "subprocess_failed", "exe": str(command[0] or exe), "exception": str(e)}
 
     def export_temp_file(
         self,
@@ -532,7 +847,15 @@ class _AgentRuntime:
         overwrite: bool = False,
     ) -> dict[str, Any]:
         os.makedirs(self.session_dir, exist_ok=True)
-        src = _safe_join(self.session_dir, temp_relative_path)
+        rp = _normalize_relative_file_path(temp_relative_path)
+        if not rp:
+            return {"error": "invalid temp_relative_path", "temp_relative_path": temp_relative_path}
+        try:
+            src = _safe_join(self.session_dir, rp)
+        except Exception as e:
+            return {"error": "invalid temp_relative_path", "temp_relative_path": temp_relative_path, "exception": str(e)}
+        if os.path.isdir(src):
+            return {"error": "source path is a directory", "temp_relative_path": temp_relative_path, "source": src}
         if not os.path.isfile(src):
             return {"error": "source file not found", "temp_relative_path": temp_relative_path}
         return {
@@ -543,21 +866,6 @@ class _AgentRuntime:
             "requested_name": workspace_relative_path,
             "overwrite": overwrite,
         }
-
-
-def _get_summary_storage_key(session: Any) -> str:
-    candidates = [
-        _safe_get(session, "conversation_id"),
-        _safe_get(session, "chat_id"),
-        _safe_get(session, "task_id"),
-        _safe_get(session, "id"),
-        _safe_get(session, "session_id"),
-        _safe_get(session, "app_run_id"),
-    ]
-    for c in candidates:
-        if isinstance(c, str) and c.strip():
-            return SUMMARY_KEY_PREFIX + c.strip()
-    return SUMMARY_KEY_PREFIX + "global"
 
 
 def _storage_get_text(storage: Any, key: str) -> str:
@@ -661,16 +969,19 @@ class SkillAgentTool(Tool):
         query = tool_parameters.get("query")
         max_steps = int(tool_parameters.get("max_steps") or 8)
         memory_turns = int(tool_parameters.get("memory_turns") or 10)
+        history_turns = int(tool_parameters.get("history_turns") or 0)
         system_prompt = tool_parameters.get("system_prompt") or "你是一个xxxx"
         skills_root = _detect_skills_root(tool_parameters.get("skills_root"))
 
         if not query or not isinstance(query, str):
             yield self.create_text_message("❌缺少 query 参数\n")
             return
+        user_input = str(query)
 
         storage = self.session.storage
-        summary_key = _get_summary_storage_key(self.session)
         resume_key = _get_resume_storage_key(self.session)
+        history_key = _get_history_storage_key(self.session)
+        session_dir_key = _get_session_dir_storage_key(self.session)
         resume_state = _storage_get_json(storage, resume_key)
         resume_pending = bool(resume_state.get("pending"))
         is_resuming = False
@@ -678,17 +989,23 @@ class SkillAgentTool(Tool):
         plugin_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         temp_root = os.path.join(plugin_root, "temp")
         os.makedirs(temp_root, exist_ok=True)
-        session_dir = os.path.join(temp_root, f"dify-skill-{uuid.uuid4().hex[:8]}-")
+        persisted_session_dir = _storage_get_text(storage, session_dir_key).strip()
+        if persisted_session_dir and os.path.isdir(persisted_session_dir):
+            session_dir = persisted_session_dir
+        else:
+            session_dir = os.path.join(temp_root, f"dify-skill-{uuid.uuid4().hex[:8]}-")
         resume_context = ""
-        if resume_pending and _is_deny_reply(query):
+
+        if resume_pending and _is_deny_reply(user_input):
             _storage_set_json(storage, resume_key, None)
             yield self.create_text_message("🤝已收到你的拒绝，本次不会在 temp 目录创建脚本继续执行。\n")
             return
-        if resume_pending and _is_allow_reply(query):
+        if resume_pending and _is_allow_reply(user_input):
             candidate = str(resume_state.get("session_dir") or "").strip()
             if candidate:
                 session_dir = candidate
                 os.makedirs(session_dir, exist_ok=True)
+                _storage_set_text(storage, session_dir_key, session_dir)
                 original_query_for_resume = str(resume_state.get("original_query") or "").strip()
                 if original_query_for_resume:
                     query = original_query_for_resume
@@ -700,6 +1017,7 @@ class SkillAgentTool(Tool):
                     + "请直接基于当前 temp 会话目录中的中间产物继续推进，优先生成最终可交付文件。\n"
                 )
         os.makedirs(session_dir, exist_ok=True)
+        _storage_set_text(storage, session_dir_key, session_dir)
         if not is_resuming:
             _cleanup_old_temp_sessions(temp_root, keep=4, protect_dirs={session_dir})
 
@@ -762,6 +1080,11 @@ class SkillAgentTool(Tool):
                     f"- {f.get('relative_path')} | mime={f.get('mime_type') or ''} | bytes={f.get('bytes') or 0} | filename={f.get('filename') or ''}"
                 )
             uploads_context = "\n".join(lines) + "\n"
+        else:
+            uploads_dir = _safe_join(session_dir, "uploads")
+            os.makedirs(uploads_dir, exist_ok=True)
+
+        uploads_context = _build_uploads_context(session_dir)
 
         runtime = _AgentRuntime(
             skills_root=skills_root,
@@ -770,7 +1093,37 @@ class SkillAgentTool(Tool):
             memory_turns=memory_turns,
         )
 
-        existing_summary = _storage_get_text(storage, summary_key).strip()
+        history_messages: list[Any] = []
+        if history_turns > 0:
+            history_state = _storage_get_json(storage, history_key)
+            turns = history_state.get("turns")
+            if isinstance(turns, list) and turns:
+                picked: list[tuple[str, str]] = []
+                for t in reversed(turns[-history_turns:]):
+                    if not isinstance(t, dict):
+                        continue
+                    u = str(t.get("user") or "").strip()
+                    a = str(t.get("assistant") or "").strip()
+                    if not u and not a:
+                        continue
+                    picked.append((u, a))
+                if picked:
+                    acc: list[tuple[str, str]] = []
+                    total = 0
+                    for u, a in picked:
+                        block_len = len(u) + len(a)
+                        if total + block_len > HISTORY_TRANSCRIPT_MAX_CHARS and acc:
+                            break
+                        acc.append((u, a))
+                        total += block_len
+                        if total >= HISTORY_TRANSCRIPT_MAX_CHARS:
+                            break
+                    acc.reverse()
+                    for u, a in acc:
+                        if u:
+                            history_messages.append(UserPromptMessage(content=u))
+                        if a:
+                            history_messages.append(AssistantPromptMessage(content=a))
 
         skills_index = runtime.load_skills_index()
         try:
@@ -785,23 +1138,29 @@ class SkillAgentTool(Tool):
         )
         system_content = (
             system_prompt.strip()
-            + ("\n\n对话摘要（自动生成）：\n" + existing_summary if existing_summary else "")
             + "\n\n你是一个使用 Skills 文件夹作为“工具箱”的通用型 Agent。\n"
+            + "\n[会话路径]\n"
+            + f"- session_dir: {session_dir}\n"
+            + f"- skills_root: {skills_root}\n"
             + "你必须遵循渐进式披露流程：\n"
             + "1) 只根据技能元数据（name/description）判断可能相关的技能\n"
             + "2) 触发时才调用 get_skill_metadata 读取 SKILL.md（说明文档）\n"
-            + "3) 只有在需要更深信息时，才调用 list_skill_files / read_skill_file\n"
-            + "4) 只有在明确需要执行脚本/命令时，才调用 run_skill_command\n"
-            + "5) 执行前必须先确认技能包内确实存在可执行入口（脚本/模块等），不要猜测模块名；如果缺少可执行入口，则先交付当前可交付产物，并询问用户是否允许你在 temp 目录中自行创建脚本后再尝试生成。\n"
+            + "2.1) 任何对技能的进一步操作（list_skill_files/read_skill_file/run_skill_command）之前，必须先 get_skill_metadata；若未执行，本系统会拒绝该调用并要求你先补读说明书。\n"
+            + "3) 按说明书内容执行脚本/命令，或进一步搜索资料前，必须先调用 list_skill_files 查看目录结构，以确保在正确的目录执行命令。\n"
+            + "4) 只有在需要更深信息时，才调用 read_skill_file\n"
+            + "5) 只有在明确需要执行脚本/命令时，才调用 run_skill_command\n"
+            + "6) 执行前必须先确认技能包内确实存在可执行入口（脚本/模块等），不要猜测模块名；如果缺少可执行入口，则先交付当前可交付产物，并询问用户是否允许你在 temp 目录中自行创建脚本后再尝试生成。\n"
+            + "路径规则：uploads/ 与你用 write_temp_file 生成的中间产物都位于 session_dir 下；run_skill_command 的 cwd 在 skills_root/<skill_name> 下。\n"
+            + "因此：只要命令参数需要引用 uploads/ 或 temp 中间文件，一律使用 read_temp_file 返回的绝对路径（result.path）传给命令；不要使用 ../uploads、../../temp 这类相对路径猜测。\n"
+            + "依赖安装规则：如需 npm install/npm ci/bun install，必须用 run_skill_command 在技能包内含 package.json 的目录执行（通过 cwd_relative 指到该目录）；禁止在 session_dir 执行 install，否则会写入 temp/<session>/node_modules 导致每次会话重复安装。\n"
             + "补充规则：如果用户请求中已经明确给出具体类型/参数，则视为已确认，不要重复追问，直接进入对应分支执行。\n"
-            + "补充规则：同一轮内如已获取过某技能的 skill_md，请勿重复调用 get_skill_metadata；可 read_temp_file(skill_md_path)。\n"
-            + "补充规则：当你准备调用 write_temp_file 时，必须先在自然语言里输出一行“写入意图确认”，包含：relative_path + 内容摘要（前 80 字）+ 大致长度；然后再发起工具调用。严禁发起 arguments 为空或缺少 relative_path/content 的 write_temp_file 调用。\n"
+            + "补充规则：当你准备调用 write_temp_file 时，必须先在自然语言里输出一行“写入意图确认”，包含：relative_path + 内容摘要（前 80 字）+ 大致长度；然后再发起工具调用。relative_path 必须是文件路径（不能是空、'.'、'..'、不能以 '/' 结尾，不能指向目录）。\n"
             + (uploads_context or "")
             + "你必须把实现过程中的中间产物写入 temp 会话目录（脚本、草稿、生成物等）：\n"
             + "- 写文本：write_temp_file\n"
             + "- 运行命令生成文件：run_temp_command\n"
             + "对任何“有明确交付物”的请求，你必须在同一轮内推进直到：生成可交付文件，或给出明确失败原因。\n"
-            + "本工具会在结束时把 temp 目录里的所有文件自动作为文件输出返回给用户。\n\n"
+            + "只有调用 export_temp_file 标记的文件，才会作为最终交付文件返回给用户；uploads/ 与未标记文件不会回传。\n\n"
             + "可用动作：\n"
             + "- get_session_context()\n"
             + "- get_skill_metadata(skill_name)\n"
@@ -815,16 +1174,16 @@ class SkillAgentTool(Tool):
             + "- export_temp_file(temp_relative_path, workspace_relative_path, overwrite)  # 不复制，仅标记交付名\n\n"
             + "如果模型支持 function call，请直接发起工具调用；若不支持，则用 JSON 协议响应：\n"
             + '{"type":"tool","name":"get_skill_metadata","arguments":{"skill_name":"xxx"}}\n'
-            + '或 {"type":"final","content":"...","files":[{"path":"relative","mime_type":"...","filename":"..."}]}\n\n'
+            + '或 {"type":"final","content":"..."}\n\n'
             + "技能索引（用于判断是否需要调用技能）：\n"
             + json.dumps(skills_index, ensure_ascii=False)
             + (resume_context or "")
         )
 
-        messages: list[Any] = [
-            SystemPromptMessage(content=system_content),
-            UserPromptMessage(content=query),
-        ]
+        messages: list[Any] = [SystemPromptMessage(content=system_content)]
+        if history_messages:
+            messages.extend(history_messages)
+        messages.append(UserPromptMessage(content=query))
 
         def compact() -> None:
             if memory_turns <= 0:
@@ -926,12 +1285,14 @@ class SkillAgentTool(Tool):
             streamed_any = False
             saw_tool_calls = False
             typing_chunk = 6
+            emitted_prefix = False
+            emitted_len = 0
 
             def emit_typing(text: str) -> Generator[ToolInvokeMessage, None, None]:
                 nonlocal streamed_any
                 if not text:
                     return
-                tagged = "\n【Agent】\n" + text.strip() + "\n\n"
+                tagged = "\n【🤖Skill_Agent】\n" + text.strip() + "\n\n"
                 step = max(1, int(typing_chunk))
                 for i in range(0, len(tagged), step):
                     yield self.create_text_message(tagged[i : i + step])
@@ -939,6 +1300,12 @@ class SkillAgentTool(Tool):
             
             def should_emit_user_text(text: str) -> bool:
                 if not text:
+                    return False
+                s = str(text)
+                stripped = s.lstrip()
+                if stripped.startswith("{") and _extract_first_json_object(s) is None:
+                    return False
+                if stripped.startswith("```") and stripped.count("```") < 2:
                     return False
                 json_text = _extract_first_json_object(text)
                 if not json_text:
@@ -1000,8 +1367,22 @@ class SkillAgentTool(Tool):
                             saw_tool_calls = True
                     if t:
                         text_parts.append(t)
+                        combined_text_live = "".join(text_parts).strip()
+                        if combined_text_live and not saw_tool_calls and should_emit_user_text(combined_text_live):
+                            if not emitted_prefix:
+                                yield self.create_text_message("\n【🤖Skill_Agent】\n")
+                                emitted_prefix = True
+                            new = combined_text_live[emitted_len:]
+                            if new:
+                                step = max(1, int(typing_chunk))
+                                for i in range(0, len(new), step):
+                                    yield self.create_text_message(new[i : i + step])
+                                    streamed_any = True
+                                emitted_len = len(combined_text_live)
                 combined_text = "".join(text_parts).strip()
-                if combined_text and not saw_tool_calls and should_emit_user_text(combined_text):
+                if emitted_prefix:
+                    yield self.create_text_message("\n\n")
+                elif combined_text and not saw_tool_calls and should_emit_user_text(combined_text):
                     yield from emit_typing(combined_text)
                 return combined_text, tool_calls_all, nontext_content, chunks_count, streamed_any
             except Exception as e:
@@ -1048,6 +1429,51 @@ class SkillAgentTool(Tool):
                         call_id, name, arguments = _parse_tool_call(tc)
                         tool_name = str(name or "")
                         _dbg(f"tool_call name={tool_name} id={call_id!s} args={_shorten_text(arguments, 400)}")
+
+                        ok_args, arg_detail = _validate_tool_arguments(tool_name, arguments)
+                        if not ok_args:
+                            result = {
+                                "error": "invalid_tool_arguments",
+                                "tool": tool_name,
+                                "detail": arg_detail,
+                                "got": arguments,
+                            }
+                            _dbg(f"tool_result name={tool_name} result={_shorten_text(result, 700)}")
+                            messages.append(
+                                ToolPromptMessage(
+                                    tool_call_id=str(call_id or ""),
+                                    name=tool_name,
+                                    content=json.dumps(result, ensure_ascii=False),
+                                )
+                            )
+                            messages.append(UserPromptMessage(content=_tool_call_retry_prompt(tool_name, arg_detail)))
+                            continue
+
+                        if tool_name in {"list_skill_files", "read_skill_file", "run_skill_command"}:
+                            skill_name = str(arguments.get("skill_name") or "").strip()
+                            if skill_name and not runtime.has_skill_metadata(skill_name):
+                                result = {
+                                    "error": "skill_md_required",
+                                    "skill_name": skill_name,
+                                    "detail": "必须先调用 get_skill_metadata(skill_name) 读取 SKILL.md（说明书）后，才能继续调用该工具。",
+                                }
+                                _dbg(f"tool_result name={tool_name} result={_shorten_text(result, 700)}")
+                                messages.append(
+                                    ToolPromptMessage(
+                                        tool_call_id=str(call_id or ""),
+                                        name=tool_name,
+                                        content=json.dumps(result, ensure_ascii=False),
+                                    )
+                                )
+                                messages.append(
+                                    UserPromptMessage(
+                                        content=(
+                                            f"你刚才尝试调用 `{tool_name}` 但尚未读取技能《{skill_name}》的 SKILL.md。"
+                                            f"请先调用 get_skill_metadata({skill_name!r})，再重试该工具调用。"
+                                        )
+                                    )
+                                )
+                                continue
 
                         if tool_name == "get_skill_metadata":
                             yield self.create_text_message(
@@ -1106,6 +1532,14 @@ class SkillAgentTool(Tool):
                                 ),
                                 auto_install=bool(arguments.get("auto_install") or False),
                             )
+                            if (
+                                isinstance(result, dict)
+                                and result.get("returncode") is not None
+                                and int(result.get("returncode") or 0) != 0
+                            ):
+                                stderr = str(result.get("stderr") or "").strip()
+                                if stderr:
+                                    yield self.create_text_message("❌命令执行失败（stderr）：\n" + _shorten_text(stderr, 1200) + "\n")
                             if isinstance(result, dict) and result.get("error") == "no_executable_found":
                                 skill = str(result.get("skill") or arguments.get("skill_name") or "")
                                 module = str(result.get("module") or "")
@@ -1158,6 +1592,14 @@ class SkillAgentTool(Tool):
                                 ),
                                 auto_install=bool(arguments.get("auto_install") or False),
                             )
+                            if (
+                                isinstance(result, dict)
+                                and result.get("returncode") is not None
+                                and int(result.get("returncode") or 0) != 0
+                            ):
+                                stderr = str(result.get("stderr") or "").strip()
+                                if stderr:
+                                    yield self.create_text_message("❌命令执行失败（stderr）：\n" + _shorten_text(stderr, 1200) + "\n")
                         elif tool_name == "export_temp_file":
                             temp_rel = str(arguments.get("temp_relative_path") or "")
                             workspace_rel = str(arguments.get("workspace_relative_path") or "")
@@ -1167,10 +1609,16 @@ class SkillAgentTool(Tool):
                                 overwrite=bool(arguments.get("overwrite") or False),
                             )
                             out_name = os.path.basename(workspace_rel) if workspace_rel else ""
-                            if temp_rel and out_name:
+                            if (
+                                isinstance(result, dict)
+                                and not result.get("error")
+                                and temp_rel
+                                and out_name
+                            ):
                                 final_file_meta[temp_rel] = {
                                     **(final_file_meta.get(temp_rel) or {}),
                                     "filename": out_name,
+                                    "mime_type": _guess_mime_type(out_name),
                                 }
                         else:
                             result = {"error": f"unknown tool: {tool_name}"}
@@ -1215,7 +1663,7 @@ class SkillAgentTool(Tool):
                     if empty_responses < 3:
                         messages.append(
                             UserPromptMessage(
-                                content='你刚才没有输出任何内容。请继续完成任务：如果支持函数调用请调用工具；否则请输出 JSON：{"type":"final","content":"...","files":[...]}'
+                                content='你刚才没有输出任何内容。请继续完成任务：如果支持函数调用请调用工具；否则请输出 JSON：{"type":"final","content":"..."}'
                             )
                         )
                         continue
@@ -1226,20 +1674,6 @@ class SkillAgentTool(Tool):
                     if action and action.get("type") == "final":
                         final_text = str(action.get("content") or "")
                         _dbg(f"final_json content_len={len(final_text)}")
-                        files = action.get("files") or []
-                        if isinstance(files, list):
-                            for f in files:
-                                if not isinstance(f, dict):
-                                    continue
-                                rel = f.get("path")
-                                if not rel or not isinstance(rel, str):
-                                    continue
-                                meta: dict[str, str] = {}
-                                if f.get("mime_type"):
-                                    meta["mime_type"] = str(f.get("mime_type"))
-                                if f.get("filename"):
-                                    meta["filename"] = str(f.get("filename"))
-                                final_file_meta[rel] = meta
                     else:
                         final_text = res_text
                         _dbg(f"final_text content_len={len(final_text)}")
@@ -1256,6 +1690,47 @@ class SkillAgentTool(Tool):
                 arguments = action.get("arguments") or {}
                 if not isinstance(arguments, dict):
                     arguments = {}
+
+                ok_args, arg_detail = _validate_tool_arguments(name, arguments)
+                if not ok_args:
+                    messages.append(UserPromptMessage(content=_tool_call_retry_prompt(name, arg_detail)))
+                    result = {
+                        "error": "invalid_tool_arguments",
+                        "tool": name,
+                        "detail": arg_detail,
+                        "got": arguments,
+                    }
+                    _dbg(f"json_tool_result name={name} result={_shorten_text(result, 700)}")
+                    messages.append(
+                        AssistantPromptMessage(
+                            content="TOOL_RESULT\n" + json.dumps({"name": name, "result": result}, ensure_ascii=False)
+                        )
+                    )
+                    continue
+
+                if name in {"list_skill_files", "read_skill_file", "run_skill_command"}:
+                    skill_name = str(arguments.get("skill_name") or "").strip()
+                    if skill_name and not runtime.has_skill_metadata(skill_name):
+                        messages.append(
+                            UserPromptMessage(
+                                content=(
+                                    f"你刚才尝试调用 `{name}` 但尚未读取技能《{skill_name}》的 SKILL.md。"
+                                    f"请先调用 get_skill_metadata({skill_name!r})，再重试该工具调用。"
+                                )
+                            )
+                        )
+                        result = {
+                            "error": "skill_md_required",
+                            "skill_name": skill_name,
+                            "detail": "必须先调用 get_skill_metadata(skill_name) 读取 SKILL.md（说明书）后，才能继续调用该工具。",
+                        }
+                        _dbg(f"json_tool_result name={name} result={_shorten_text(result, 700)}")
+                        messages.append(
+                            AssistantPromptMessage(
+                                content="TOOL_RESULT\n" + json.dumps({"name": name, "result": result}, ensure_ascii=False)
+                            )
+                        )
+                        continue
 
                 _dbg(f"json_tool name={name} args={_shorten_text(arguments, 400)}")
                 messages.append(AssistantPromptMessage(content=json.dumps(action, ensure_ascii=False)))
@@ -1334,8 +1809,17 @@ class SkillAgentTool(Tool):
                         overwrite=bool(arguments.get("overwrite") or False),
                     )
                     out_name = os.path.basename(workspace_rel) if workspace_rel else ""
-                    if temp_rel and out_name:
-                        final_file_meta[temp_rel] = {**(final_file_meta.get(temp_rel) or {}), "filename": out_name}
+                    if (
+                        isinstance(result, dict)
+                        and not result.get("error")
+                        and temp_rel
+                        and out_name
+                    ):
+                        final_file_meta[temp_rel] = {
+                            **(final_file_meta.get(temp_rel) or {}),
+                            "filename": out_name,
+                            "mime_type": _guess_mime_type(out_name),
+                        }
                 else:
                     result = {"error": f"unknown tool: {name}"}
 
@@ -1373,58 +1857,73 @@ class SkillAgentTool(Tool):
             except Exception:
                 temp_files_text = ""
 
-            summary_input = (f"[user]\n{query}\n\n[assistant]\n{final_text or ''}" + temp_files_text).strip()
-            if len(summary_input) > SUMMARY_INPUT_MAX_CHARS:
-                summary_input = summary_input[-SUMMARY_INPUT_MAX_CHARS:]
-
-            summary_system = SystemPromptMessage(
-                content="你是一个会话摘要器。你将把新对话内容合并进已有摘要，输出中文摘要，要求简洁、结构化，保留关键事实、已生成文件路径、失败原因与待办。只输出摘要正文，不要加多余解释。"
-            )
-            summary_user = UserPromptMessage(
-                content="已有摘要：\n"
-                + (existing_summary or "(空)")
-                + "\n\n新增对话内容：\n"
-                + (summary_input or "(空)")
-            )
-            try:
-                summary_response = self.session.model.llm.invoke(
-                    model_config=model,
-                    prompt_messages=[summary_system, summary_user],
-                    stream=False,
-                )
-                summary_text = str(_safe_get(_safe_get(summary_response, "message"), "content") or "").strip()
-                if summary_text:
-                    _storage_set_text(storage, summary_key, summary_text)
-            except Exception:
-                pass
-
             files_to_send: list[tuple[str, str, str, str]] = []
             try:
-                entries = _list_dir(session_dir, max_depth=10)
-                for e in entries:
-                    if e.get("type") != "file":
-                        continue
-                    rel = e.get("relative_path")
-                    path = e.get("path")
-                    if not rel or not isinstance(rel, str) or not path or not isinstance(path, str):
+                for rel, meta_override in (final_file_meta or {}).items():
+                    if not rel or not isinstance(rel, str):
                         continue
                     rel_norm = rel.replace("\\", "/").lstrip("/")
-                    if rel_norm.startswith("_skill_cache/"):
+                    if not rel_norm:
                         continue
-                    filename = os.path.basename(rel)
-                    meta_override = final_file_meta.get(rel) or {}
-                    mime_type = meta_override.get("mime_type") or _guess_mime_type(filename)
-                    out_name = meta_override.get("filename") or filename
-                    files_to_send.append((rel, path, mime_type, out_name))
+                    try:
+                        path = _safe_join(session_dir, rel_norm)
+                    except Exception:
+                        continue
+                    if not os.path.isfile(path):
+                        continue
+                    filename = os.path.basename(rel_norm)
+                    out_name = (meta_override.get("filename") if isinstance(meta_override, dict) else None) or filename
+                    mime_type = (meta_override.get("mime_type") if isinstance(meta_override, dict) else None) or _guess_mime_type(out_name or filename)
+                    files_to_send.append((rel_norm, path, mime_type, out_name))
             except Exception:
                 files_to_send = []
 
+            has_any_files = False
+            try:
+                temp_entries = _list_dir(session_dir, max_depth=10)
+                has_any_files = any(e.get("type") == "file" for e in temp_entries if isinstance(e, dict))
+            except Exception:
+                has_any_files = False
+
+            assistant_text_for_history = ""
             if final_text and final_text.strip():
+                if not files_to_send and final_text.strip() == "已生成文件。":
+                    final_text = "已生成中间文件，但未调用 export_temp_file 标记交付文件。"
+                assistant_text_for_history = final_text.strip()
+                _append_history_turn(
+                    storage,
+                    history_key=history_key,
+                    user_text=user_input,
+                    assistant_text=assistant_text_for_history,
+                )
                 if not final_text_already_streamed:
                     yield from stream_text_to_user(final_text)
             elif files_to_send:
+                assistant_text_for_history = "已生成文件。"
+                _append_history_turn(
+                    storage,
+                    history_key=history_key,
+                    user_text=user_input,
+                    assistant_text=assistant_text_for_history,
+                )
                 yield from stream_text_to_user("已生成文件。")
+            elif has_any_files:
+                assistant_text_for_history = "已生成中间文件，但未调用 export_temp_file 标记交付文件。"
+                _append_history_turn(
+                    storage,
+                    history_key=history_key,
+                    user_text=user_input,
+                    assistant_text=assistant_text_for_history,
+                )
+                yield from stream_text_to_user("已生成中间文件，但未调用 export_temp_file 标记交付文件。")
             else:
+                assistant_text_for_history = "未生成任何文本或文件输出。"
+                _append_history_turn(
+                    storage,
+                    history_key=history_key,
+                    user_text=user_input,
+                    assistant_text=assistant_text_for_history,
+                )
                 yield from stream_text_to_user("未生成任何文本或文件输出。")
 
             yielded: set[str] = set()

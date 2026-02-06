@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
 import uuid
@@ -32,28 +33,38 @@ def _shorten_text(value: Any, max_len: int = 500) -> str:
     return s[: max_len - 3] + "..."
 
 def _guess_mime_type(filename: str) -> str:
-    name = (filename or "").lower()
-    if name.endswith(".xlsx"):
-        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if name.endswith(".xls"):
-        return "application/vnd.ms-excel"
-    if name.endswith(".csv"):
-        return "text/csv"
-    if name.endswith(".json"):
-        return "application/json"
-    if name.endswith(".txt"):
-        return "text/plain"
-    if name.endswith(".md"):
-        return "text/markdown"
-    if name.endswith(".png"):
-        return "image/png"
-    if name.endswith(".jpg") or name.endswith(".jpeg"):
-        return "image/jpeg"
-    if name.endswith(".pdf"):
-        return "application/pdf"
-    if name.endswith(".zip"):
-        return "application/zip"
-    return "application/octet-stream"
+    name = (filename or "").strip().lower()
+    _, ext = os.path.splitext(name)
+    ext = ext.lower()
+    if ext:
+        overrides = {
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xls": "application/vnd.ms-excel",
+            ".csv": "text/csv",
+            ".json": "application/json",
+            ".txt": "text/plain",
+            ".md": "text/markdown",
+            ".html": "text/html",
+            ".htm": "text/html",
+            ".pdf": "application/pdf",
+            ".zip": "application/zip",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".svg": "image/svg+xml",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".doc": "application/msword",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".ppt": "application/vnd.ms-powerpoint",
+            ".yaml": "application/yaml",
+            ".yml": "application/yaml",
+        }
+        if ext in overrides:
+            return overrides[ext]
+    mime_type, _ = mimetypes.guess_type(name, strict=False)
+    return mime_type or "application/octet-stream"
 
 def _safe_join(root: str, relative_path: str) -> str:
     root_abs = os.path.abspath(root)
@@ -237,11 +248,43 @@ def _parse_tool_call(tool_call: Any) -> tuple[str | None, str | None, dict[str, 
     if isinstance(raw_args, dict):
         return call_id, name, raw_args
     if not isinstance(raw_args, str):
+        try:
+            print(
+                "[skill][debug] tool_call_arguments_invalid_type "
+                + _shorten_text(
+                    {
+                        "id": call_id,
+                        "name": name,
+                        "type": type(raw_args).__name__,
+                        "raw": raw_args,
+                    },
+                    400,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
         return call_id, name, {}
     try:
         parsed = json.loads(raw_args)
         return call_id, name, parsed if isinstance(parsed, dict) else {}
-    except Exception:
+    except Exception as e:
+        try:
+            print(
+                "[skill][debug] tool_call_arguments_json_parse_failed "
+                + _shorten_text(
+                    {
+                        "id": call_id,
+                        "name": name,
+                        "raw_args": raw_args,
+                        "exception": str(e),
+                    },
+                    400,
+                ),
+                flush=True,
+            )
+        except Exception:
+            pass
         return call_id, name, {}
 
 PromptToolT = TypeVar("PromptToolT")
