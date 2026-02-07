@@ -1,7 +1,7 @@
 ## Skill Agent
 
 **Author:** lfenghx  
-**Version:** 0.0.2  
+**Version:** 0.0.3  
 **Type:** Tool (Plugin)
 
 ### Introduction
@@ -50,8 +50,28 @@ Video tutorial: https://www.bilibili.com/video/BV1iszkBCEes
 
 ### Changelog
 
+- 0.0.3:
+  1. Support agent streaming output
+  2. Support interactive, multi-turn conversations across turns
+  3. Support file memory (no need to re-upload repeatedly)
+  4. Support running Node.js scripts as skills
+  5. Improve skill_agent runtime stability
 - 0.0.2: Support agent file upload and parsing; support automatic dependency installation
 - 0.0.1: Implement skill management and a general agent that works with progressive disclosure
+
+### FAQ
+
+1. Installation issues  
+   If installation fails with network access available, try switching Dify's pip mirror for better dependency download performance. In intranet environments, install via an offline package (contact the author).
+
+2. File transfer issues  
+   If uploading/downloading files fails (e.g., incorrect URL, download timeout), check whether Dify's `.env` has `Files_url` set correctly and whether it matches your Dify address.
+
+3. No output from skill_agent  
+   This is usually due to the model. Make sure your model and provider plugin support function calling. The author recommends DeepSeek-V3.1 and reports good test results.
+
+4. Skill invocation issues  
+   The more complete your skill is, the more smoothly the agent can invoke it. Ensure your skill materials and scripts are not missing. For Node.js-script skills, install a Node.js runtime in Dify’s `plugin_daemon` container first.
 
 ### Author & Contact
 

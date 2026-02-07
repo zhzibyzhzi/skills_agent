@@ -49,9 +49,28 @@ Skill Agent 是一个基于 “Skill 渐进式披露（Progressive Disclosure）
 
 ### 更新历史
 
-- 0.0.3：支持Agent流式输出，支持Agent跨轮次交互式对话，支持node.js脚本运行，提升Agent运行稳定性
+- 0.0.3：
+  1. 支持Agent流式输出
+  2. 支持Agent跨轮次交互式对话，多skill衔接调用
+  3. 支持文件记忆，不用重复上传
+  4. 支持node.js脚本运行的skill
+  5. 提升了skill_agent运行稳定性
 - 0.0.2：支持Agent文件上传，解析，支持依赖自行安装
 - 0.0.1：实现技能管理，按渐进式披露方式工作的通用型Agent
+
+### 常见问题
+
+1.安装不上
+有网络的情况下安装不上，可切换一下dify的pip源，以更好的下载依赖，内网环境下需要通过离线包安装，联系作者
+
+2.文件传输问题
+上传文件，下载文件失败，提示url不对，下载超时等，请检查dify的.env文件，是否设置了正确的Files_url，且与dify的地址一致
+
+3.skill_agen没有输出
+属于大模型的问题，请确保你的大模型和供应商插件支持function call功能，作者推荐deepseek-V3.1，测试效果很好
+
+4.skill调用相关
+skill越完整，Agent调用越顺畅，保障你的skill相关资料，脚本没有缺失，如果是node.js脚本skill，请先在dify的plugin_daemon容器中安装node环境。
 
 ### 作者与联系
 

@@ -35,6 +35,7 @@ class _AgentRuntime:
         self.max_steps = max_steps
         self.memory_turns = memory_turns
         self._skill_metadata_cache: dict[str, dict[str, Any]] = {}
+        self._skill_files_listed: set[str] = set()
 
     def has_skill_metadata(self, skill_name: str) -> bool:
         cached = self._skill_metadata_cache.get(skill_name)
@@ -77,7 +78,11 @@ class _AgentRuntime:
         if not self.skills_root:
             return {"error": "skills_root not found"}
         skill_path = _safe_join(self.skills_root, skill_name)
+        self._skill_files_listed.add(skill_name)
         return {"skill": skill_name, "entries": _list_dir(skill_path, max_depth=max_depth)}
+
+    def has_listed_skill_files(self, skill_name: str) -> bool:
+        return str(skill_name or "").strip() in self._skill_files_listed
 
     def read_skill_file(self, skill_name: str, relative_path: str, max_chars: int = 12000) -> dict[str, Any]:
         if not self.skills_root:

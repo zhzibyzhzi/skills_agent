@@ -1,3 +1,4 @@
+import re
 import json
 import os
 import time
@@ -234,16 +235,19 @@ class SkillAgentTool(Tool):
             + "你必须遵循渐进式披露流程：\n"
             + "1) 只根据技能元数据（name/description）判断可能相关的技能\n"
             + "2) 触发时才调用 get_skill_metadata 读取 SKILL.md（说明文档）\n"
-            + "2.1) 任何对技能的进一步操作（list_skill_files/read_skill_file/run_skill_command）之前，必须先 get_skill_metadata；若未执行，本系统会拒绝该调用并要求你先补读说明书。\n"
-            + "3) 按说明书内容执行脚本/命令，或进一步搜索资料前，必须先调用 list_skill_files 查看目录结构，以确保在正确的目录执行命令。\n"
-            + "4) 只有在需要更深信息时，才调用 read_skill_file\n"
-            + "5) 只有在明确需要执行脚本/命令时，才调用 run_skill_command\n"
-            + "6) 执行前必须先确认技能包内确实存在可执行入口（脚本/模块等），不要猜测模块名；如果缺少可执行入口，则先交付当前可交付产物，并询问用户是否允许你在 temp 目录中自行创建脚本后再尝试生成。\n"
+            + "3) 任何对技能的进一步操作（list_skill_files/read_skill_file/run_skill_command）之前，必须先 get_skill_metadata；若未执行，本系统会拒绝该调用并要求你先补读说明书。\n"
+            + "4) 按说明书内容执行脚本/命令，或进一步搜索资料前，必须先调用 list_skill_files 查看技能包的目录结构，以确保在正确的目录执行命令。\n"
+            + "5) 只有在需要更深信息时，才调用 read_skill_file\n"
+            + "6) 只有在明确需要执行脚本/命令时，才调用 run_skill_command\n"
+            + "7) 执行前必须先确认技能包内确实存在可执行入口（脚本/模块等），不要猜测模块名；如果缺少可执行入口，则先交付当前可交付产物，并询问用户是否允许你在 temp 目录中自行创建脚本后再尝试生成。\n"
+            + "8) 按说明书要求生成最终文件后，必须用 export_temp_file 标记最终文件\n"
             + "路径规则：uploads/ 与你用 write_temp_file 生成的中间产物都位于 session_dir 下；run_skill_command 的 cwd 在 skills_root/<skill_name> 下。\n"
             + "因此：只要命令参数需要引用 uploads/ 或 temp 中间文件，一律使用 read_temp_file 返回的绝对路径（result.path）传给命令；不要使用 ../uploads、../../temp 这类相对路径猜测。\n"
             + "依赖安装规则：如需 npm install/npm ci/bun install，必须用 run_skill_command 在技能包内含 package.json 的目录执行（通过 cwd_relative 指到该目录）；禁止在 session_dir 执行 install，否则会写入 temp/<session>/node_modules 导致每次会话重复安装。\n"
-            + "补充规则：如果用户请求中已经明确给出具体类型/参数，则视为已确认，不要重复追问，直接进入对应分支执行。\n"
-            + "补充规则：当你准备调用 write_temp_file 时，必须先在自然语言里输出一行“写入意图确认”，包含：relative_path + 内容摘要（前 80 字）+ 大致长度；然后再发起工具调用。relative_path 必须是文件路径（不能是空、'.'、'..'、不能以 '/' 结尾，不能指向目录）。\n"
+            + "补充规则1：如果用户请求中已经明确给出具体类型/参数，则视为已确认，不要重复追问，直接进入对应分支执行。\n"
+            + "补充规则2：当你需要向用户追问任何信息时：本轮必须只输出问题与选项，并立刻结束；不得在同一轮继续读取任何文件、执行任何命令、生成任何产物。\n"
+            + "补充规则3：默认值只能在用户明确说‘默认/随便/你决定’时启用；用户未回复不等于选择了默认。"
+            + "补充规则4：当你准备调用 write_temp_file 时，必须先在自然语言里输出一行“写入意图确认”，包含：relative_path + 内容摘要（前 80 字）+ 大致长度；然后再发起工具调用。relative_path 必须是文件路径（不能是空、'.'、'..'、不能以 '/' 结尾，不能指向目录）。\n"
             + (uploads_context or "")
             + "你必须把实现过程中的中间产物写入 temp 会话目录（脚本、草稿、生成物等）：\n"
             + "- 写文本：write_temp_file\n"
@@ -297,6 +301,18 @@ class SkillAgentTool(Tool):
             step = max(1, int(chunk_size))
             for i in range(0, len(s), step):
                 yield self.create_text_message(s[i : i + step])
+
+        def redact_user_visible_text(text: str) -> str:
+            s = str(text or "")
+            if not s:
+                return s
+            for p in [session_dir, skills_root]:
+                if p and isinstance(p, str):
+                    s = s.replace(p, "<REDACTED_PATH>")
+                    s = s.replace(p.replace("\\", "/"), "<REDACTED_PATH>")
+            s = re.sub(r"[A-Za-z]:\\[^\s\r\n\t\"']+", "<REDACTED_PATH>", s)
+            s = re.sub(r"/[^\s\r\n\t\"']+", "<REDACTED_PATH>", s)
+            return s
 
         def persist_llm_assets(parts: Any) -> list[str]:
             if not parts or not isinstance(parts, list):
@@ -563,6 +579,29 @@ class SkillAgentTool(Tool):
                                     )
                                 )
                                 continue
+                            if tool_name == "run_skill_command" and skill_name and not runtime.has_listed_skill_files(skill_name):
+                                result = {
+                                    "error": "skill_files_listing_required",
+                                    "skill_name": skill_name,
+                                    "detail": "执行技能命令前，必须先调用 list_skill_files(skill_name) 查看技能包目录结构。",
+                                }
+                                _dbg(f"tool_result name={tool_name} result={_shorten_text(result, 700)}")
+                                messages.append(
+                                    ToolPromptMessage(
+                                        tool_call_id=str(call_id or ""),
+                                        name=tool_name,
+                                        content=json.dumps(result, ensure_ascii=False),
+                                    )
+                                )
+                                messages.append(
+                                    UserPromptMessage(
+                                        content=(
+                                            f"你刚才尝试调用 `{tool_name}` 但尚未查看技能《{skill_name}》的目录结构。"
+                                            f"请先调用 list_skill_files({skill_name!r})，再重试该工具调用。"
+                                        )
+                                    )
+                                )
+                                continue
 
                         if tool_name == "get_skill_metadata":
                             yield self.create_text_message(
@@ -577,9 +616,8 @@ class SkillAgentTool(Tool):
                                 f"✅正在读取技能《{str(arguments.get('skill_name') or '')}》文件：{str(arguments.get('relative_path') or '')}…\n"
                             )
                         elif tool_name == "run_skill_command":
-                            cmd = arguments.get("command") if isinstance(arguments.get("command"), list) else []
                             yield self.create_text_message(
-                                f"✅正在执行技能《{str(arguments.get('skill_name') or '')}》命令：{_shorten_text(cmd, 160)}…\n"
+                                f"✅正在执行技能《{str(arguments.get('skill_name') or '')}》命令…\n"
                             )
                         elif tool_name == "write_temp_file":
                             yield self.create_text_message(
@@ -592,8 +630,7 @@ class SkillAgentTool(Tool):
                         elif tool_name == "list_temp_files":
                             yield self.create_text_message("✅正在查看临时目录文件…\n")
                         elif tool_name == "run_temp_command":
-                            cmd = arguments.get("command") if isinstance(arguments.get("command"), list) else []
-                            yield self.create_text_message(f"✅正在执行临时命令：{_shorten_text(cmd, 160)}…\n")
+                            yield self.create_text_message("✅正在执行临时命令…\n")
                         elif tool_name == "export_temp_file":
                             yield self.create_text_message(
                                 f"✅正在标记交付文件：{str(arguments.get('temp_relative_path') or '')}…\n"
@@ -628,7 +665,9 @@ class SkillAgentTool(Tool):
                             ):
                                 stderr = str(result.get("stderr") or "").strip()
                                 if stderr:
-                                    yield self.create_text_message("❌命令执行失败（stderr）：\n" + _shorten_text(stderr, 1200) + "\n")
+                                    yield self.create_text_message(
+                                        "❌命令执行失败（stderr）：\n" + _shorten_text(redact_user_visible_text(stderr), 1200) + "\n"
+                                    )
                             if isinstance(result, dict) and result.get("error") == "no_executable_found":
                                 skill = str(result.get("skill") or arguments.get("skill_name") or "")
                                 module = str(result.get("module") or "")
@@ -688,7 +727,9 @@ class SkillAgentTool(Tool):
                             ):
                                 stderr = str(result.get("stderr") or "").strip()
                                 if stderr:
-                                    yield self.create_text_message("❌命令执行失败（stderr）：\n" + _shorten_text(stderr, 1200) + "\n")
+                                    yield self.create_text_message(
+                                        "❌命令执行失败（stderr）：\n" + _shorten_text(redact_user_visible_text(stderr), 1200) + "\n"
+                                    )
                         elif tool_name == "export_temp_file":
                             temp_rel = str(arguments.get("temp_relative_path") or "")
                             workspace_rel = str(arguments.get("workspace_relative_path") or "")
@@ -820,6 +861,27 @@ class SkillAgentTool(Tool):
                             )
                         )
                         continue
+                    if name == "run_skill_command" and skill_name and not runtime.has_listed_skill_files(skill_name):
+                        messages.append(
+                            UserPromptMessage(
+                                content=(
+                                    f"你刚才尝试调用 `{name}` 但尚未查看技能《{skill_name}》的目录结构。"
+                                    f"请先调用 list_skill_files({skill_name!r})，再重试该工具调用。"
+                                )
+                            )
+                        )
+                        result = {
+                            "error": "skill_files_listing_required",
+                            "skill_name": skill_name,
+                            "detail": "执行技能命令前，必须先调用 list_skill_files(skill_name) 查看技能包目录结构。",
+                        }
+                        _dbg(f"json_tool_result name={name} result={_shorten_text(result, 700)}")
+                        messages.append(
+                            AssistantPromptMessage(
+                                content="TOOL_RESULT\n" + json.dumps({"name": name, "result": result}, ensure_ascii=False)
+                            )
+                        )
+                        continue
 
                 _dbg(f"json_tool name={name} args={_shorten_text(arguments, 400)}")
                 messages.append(AssistantPromptMessage(content=json.dumps(action, ensure_ascii=False)))
@@ -833,9 +895,8 @@ class SkillAgentTool(Tool):
                         f"✅正在读取技能《{str(arguments.get('skill_name') or '')}》文件：{str(arguments.get('relative_path') or '')}…\n"
                     )
                 elif name == "run_skill_command":
-                    cmd = arguments.get("command") if isinstance(arguments.get("command"), list) else []
                     yield self.create_text_message(
-                        f"✅正在执行技能《{str(arguments.get('skill_name') or '')}》命令：{_shorten_text(cmd, 160)}…\n"
+                        f"✅正在执行技能《{str(arguments.get('skill_name') or '')}》命令…\n"
                     )
                 elif name == "write_temp_file":
                     yield self.create_text_message(f"✅正在按说明书写入临时文件：{str(arguments.get('relative_path') or '')}…\n")
@@ -844,8 +905,7 @@ class SkillAgentTool(Tool):
                 elif name == "list_temp_files":
                     yield self.create_text_message("✅正在查看临时目录文件…\n")
                 elif name == "run_temp_command":
-                    cmd = arguments.get("command") if isinstance(arguments.get("command"), list) else []
-                    yield self.create_text_message(f"✅正在执行临时命令：{_shorten_text(cmd, 160)}…\n")
+                    yield self.create_text_message("✅正在执行临时命令…\n")
                 elif name == "export_temp_file":
                     yield self.create_text_message(f"✅正在标记交付文件：{str(arguments.get('temp_relative_path') or '')}…\n")
 
