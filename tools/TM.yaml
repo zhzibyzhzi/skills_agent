@@ -29,20 +29,20 @@ parameters:
       ja_JP: "ローカルのスキルパッケージを管理（追加/削除/表示/ダウンロード）"
     llm_description: "supported commands: add, delete, list, download"
     form: llm
-  - name: files
-    type: files
+  - name: skills_root
+    type: string
     required: false
     label:
-      en_US: Zip files
-      zh_Hans: Zip压缩包
-      pt_BR: Zip files
-      ja_JP: Zipファイル
+      en_US: Skills Root Path
+      zh_Hans: 本地技能目录
+      pt_BR: Skills Root Path
+      ja_JP: Skills Root Path
     human_description:
-      en_US: "Zip package(s) for add command."
-      zh_Hans: "新增技能时上传 zip 压缩包"
-      pt_BR: "Zip package(s) for add command."
-      ja_JP: "新增技能 用の zip"
-    llm_description: "Zip package(s) for add command"
+      en_US: "Absolute path to the skills directory (e.g. /app/skills)."
+      zh_Hans: "技能文件夹的绝对路径（例如 /app/skills）；留空则使用默认或环境变量。"
+      pt_BR: "Absolute path to the skills directory."
+      ja_JP: "Absolute path to the skills directory."
+    llm_description: "Absolute path to the skills directory"
     form: form
 extra:
   python:

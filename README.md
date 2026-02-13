@@ -1,21 +1,23 @@
 ## Skill Agent
 
 **Author:** lfenghx  
-**Version:** 0.0.3  
+**Version:** 0.0.4  
 **Type:** Tool (Plugin)
 
 ### Introduction
 
-Skill Agent is a general-purpose tool plugin based on “Skill Progressive Disclosure”. It treats the local `skills/` directory as a toolbox, so the model can read the skill manual on demand, then read files / run scripts only when necessary, and finally deliver text or files.
+Skill Agent is a general-purpose tool plugin based on “Skill Progressive Disclosure”. It treats the local (or mounted) `skills/` directory as a toolbox, so the model can read the skill manual on demand, then read files / run scripts only when necessary, and finally deliver text or files.
 
 ### Use Cases
 
 - You want to integrate Skills and constrain/strengthen the model using “manual (SKILL.md) + file structure + scripts”
 - You want progress messages and to return generated files as tool outputs
 - You want to package capabilities as reusable skill folders (Reference, Scripts, etc.) instead of hard-coding everything in prompts
+- **(New)** You want to manage skill codes directly in the local file system instead of uploading zip packages repeatedly.
 
 ### Features
 
+- **Local Mount Support**: Directly read the local directory mounted by the Dify container, support hot update of skill codes without re-importing.
 - Progressive disclosure: skill index → read `SKILL.md` → read files / run commands as needed
 - File delivery: all files in the temp session directory are returned when the agent finishes
 - Free execution: the agent can execute commands such as reading/writing files and running scripts
@@ -25,19 +27,22 @@ Skill Agent is a general-purpose tool plugin based on “Skill Progressive Discl
 
 This plugin provides two tools:
 
-- “Skill Manager”: manages the local skills directory (list/add/delete skills)
-  ![alt text](_assets/image-0.png)
+- “Skill Manager”: manages the local skills directory (list/delete/download skills).
+  > **Note**: ZIP upload function has been removed in this version. Please manage skill folders directly in the mounted directory.
 - “agent_skill”: a general agent that can execute skills that have been stored
   ![alt text](_assets/image-1.png)
 
 ### How to Use (in Dify)
 
 Step 1: Install this plugin directly from the Marketplace  
-Step 2: For self-hosted deployments, set `Files_url` in Dify’s `.env` to your Dify address, otherwise Dify cannot fetch uploaded files  
+Step 2: **Configure Skills Directory**
+In Dify's `docker-compose.yaml` or environment variables, configure the `SKILLS_ROOT` environment variable for the plugin service, pointing to your mounted skills directory (e.g., `/app/skills`).
+Or manually specify "Skills Root Path" in the plugin tool parameters.
+
 Step 3: Build your workflow as shown below  
 ![alt text](_assets/image-2.png)  
 Step 4: Manage skills  
-![alt text](_assets/image-3.png)  
+Create or modify skills directly in your local folder, then use the "List Skills" command of the "Skill Manager" tool in Dify to refresh the list.
 Step 5: Chat with Skill Agent  
 ![alt text](_assets/image-4.png)
 
@@ -50,6 +55,9 @@ Video tutorial: https://www.bilibili.com/video/BV1iszkBCEes
 
 ### Changelog
 
+- 0.0.4:
+  1. **Refactor Skill Management**: Removed ZIP upload function, fully switched to local directory mount mode.
+  2. Support specifying the skills root directory via environment variable `SKILLS_ROOT` or tool parameters.
 - 0.0.3:
   1. Support agent streaming output
   2. Support interactive, multi-turn conversations across turns
@@ -72,9 +80,3 @@ Video tutorial: https://www.bilibili.com/video/BV1iszkBCEes
 
 4. Skill invocation issues  
    The more complete your skill is, the more smoothly the agent can invoke it. Ensure your skill materials and scripts are not missing. For Node.js-script skills, install a Node.js runtime in Dify’s `plugin_daemon` container first.
-
-### Author & Contact
-
-- GitHub: lfenghx (repo: <https://github.com/lfenghx/skill_agent>)
-- Bilibili: 元视界\_O凌枫o
-- Email: 550916599@qq.com
